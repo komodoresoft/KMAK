@@ -1,12 +1,17 @@
+# Variables
 CC = gcc
 SRC = game.c
 TARGET = game.exe
 
+# Tasks
 task clean
+	print Cleaning...
 	cmd del $(TARGET)
 
 task run
+	print Running...
 	cmd $(TARGET)
 
 task make
+	print Making project...
 	cmd $(CC) -o $(TARGET) $(SRC)

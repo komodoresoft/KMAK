@@ -1,0 +1,4 @@
+# Global Variables
+CC = gcc
+TARGET = kmak0
+SRC = kmak.c

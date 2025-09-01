@@ -1,7 +1,5 @@
-# Global Variables
-CC = gcc
-SRC = kmak.c
-TARGET = kmak0.exe
+# Include Header
+include header.kmk          
 
 # Cleaning Task
 task clean
@@ -12,4 +10,3 @@ task clean
 task compile
 	print Compiling...
 	cmd $(CC) -o $(TARGET) $(SRC)
-	

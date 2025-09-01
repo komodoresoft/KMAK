@@ -16,14 +16,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
-#define MAX_GLOBAL_VARS   200
-#define MAX_LOCAL_VARS    100
-#define MAX_TASK_NAME_LEN 32
-#define MAX_TASK_LINES    64
-#define MAX_TASKS         64
-#define INVALID           -1
+#define MAX_GLOBAL_VARS   (200)
+#define MAX_LOCAL_VARS    (100)
+#define MAX_INCLUDES      (10)
+#define MAX_TASK_NAME_LEN (32)
+#define MAX_TASK_LINES    (64)
+#define MAX_TASKS         (64)
+#define INVALID           (-1)
+
+#define SAFE_FREE(a) \
+  do {               \
+    if (a) free(a);  \
+    a = NULL;        \
+  } while (0)
+
+#ifdef _WIN32
+
+#define strdup _strdup
+
+#endif
 
 typedef struct _KMK_VAR {
   char name[128];
@@ -34,26 +46,33 @@ typedef struct _KMK_TASK {
   char name[MAX_TASK_NAME_LEN];
   char *lines[MAX_TASK_LINES];
   int line_count;
+  int line_start;
 } KMK_Task;
 
 void usage(char *app)
 {
   printf("usage: %s InputFile <Task>\n", app);
+  printf("kmak v1.2\n");
 }
 
 void trim_left(char **str);
+void trim_right(char **str);
 char *start_with_word(char *line, char *word);
 void ignore_comments(char *line);
 char *get_variable_value(char *name);
 int process_variable_substitution(char *line);
 int is_task(char *task);
 int parse_variable_definition(char *line);
+int parse_include(char *line);
 int parse_task(char *line);
 int parse_print(char *line);
+int parse_exit(char *line);
 int parse_call(char *line);
 int parse_cmd(char *line);
 int run_task(char *name);
+int process_file(char *filename, int fromMain);
 
+char *gProgName = NULL;
 char *gFileContent = NULL;
 KMK_Var gLocalVariables[MAX_LOCAL_VARS];
 KMK_Var gGlobalVariables[MAX_GLOBAL_VARS];
@@ -64,30 +83,23 @@ int gGlobalVarsCount = 0;
 int gTasksCount = 0;
 int gInsideTask = 0;
 int gLine = 1;
+int gLineStack[MAX_INCLUDES];
+int gLineStackIndex = 0;
 
-void terminate(void)
-{
-  free(gFileContent);
-  for (int i = 0; i < gTasksCount; ++i) {
-    for (int j = 0; j < gTasks[i].line_count; ++i) {
-      free(gTasks[i].lines[j]);
-    }
-  }
-  ExitProcess(INVALID);
-}
+void terminate(int code);
 
 void run_err(const char *error)
 {
   printf("Runtime Error: ");
   printf(error);
-  terminate();
+  terminate(INVALID);
 }
 
 void perr(const char *error)
 {
   printf("error: line %d: ", gLine);
   printf(error);
-  terminate();
+  terminate(INVALID);
 }
 
 int char_in_tok(char c, char *toks)
@@ -123,79 +135,34 @@ char *find_next(char **p, char *src, char *toks)
 
 int main(int argc, char **argv)
 {
-  if (argc < 3) {
+  gProgName = argv[0];
+  
+  if (argc < 2) {
     printf("error: No input file provided.\n");
-    usage(argv[0]);
+    usage(gProgName);
     return -1;
   }
   
-  FILE *fp = fopen(argv[1], "r");
-  if (!fp) {
-    printf("error: Couldn't open %s\n", argv[1]);
-    usage(argv[0]);
+  if (process_file(argv[1], 1))
     return -1;
-  }
   
-  fseek(fp, 0, SEEK_END);
-  size_t len = ftell(fp);
-  fseek(fp, 0, SEEK_SET);
-  
-  gFileContent = malloc(len + 1);
-  memset(gFileContent, '\0', len + 1);
-  if (!gFileContent) {
-    run_err("Could not allocate input file data.\n");
-    fclose(fp);
-    return -1;
-  }
-  fread(gFileContent, 1, len, fp);
-  fclose(fp);
-  
-  gLine = 0;
-  gInsideTask = 0;
-  char *p, *p2;
-  char *line = find_next(&p, gFileContent, "\r\n");
-  while (line) {
-    char line_buf[1024];
-    strncpy(line_buf, line, sizeof(line_buf) - 1);
-    line_buf[sizeof(line_buf) - 1] = '\0';
-    char *ln = line_buf;
-    
-    gLine++;
-    ignore_comments(ln);
-    if (gInsideTask) {
-      if ((*ln) && (*ln != ' ') && (*ln != '\t')) {
-        gCurrentTask = NULL;
-        gInsideTask = 0;
-      }
-    }
-    trim_left(&ln);
-    process_variable_substitution(ln);
-    if (parse_task(ln)) {
-      line = find_next(&p2, p, "\r\n");
-      p = p2;
-      continue;
-    } else
-    if (parse_variable_definition(ln)) {
-    
-    }
-    
-    if (gInsideTask && gCurrentTask) {
-      gCurrentTask->lines[gCurrentTask->line_count] = _strdup(ln);
-      gCurrentTask->line_count++;
-    }
-    line = find_next(&p2, p, "\r\n");
-    p = p2;
-  }
-  
-  free(gFileContent);
+  SAFE_FREE(gFileContent);
   
   if (argc >= 3) {
     run_task(argv[2]);
+  } else {
+    printf("error: no task provided.\n");
+    usage(gProgName);
+    printf("Tasks:\n");
+    for (int i = 0; i < gTasksCount; ++i) {
+      printf("  - %s\n", gTasks[i].name);
+    }
+    return -1;
   }
   
   for (int i = 0; i < gTasksCount; ++i) {
     for (int j = 0; j < gTasks[i].line_count; ++j) {
-      free(gTasks[i].lines[j]);
+      SAFE_FREE(gTasks[i].lines[j]);
     }
   }
   return 0;
@@ -206,6 +173,16 @@ void trim_left(char **str)
   while (isspace(**str) && **str) {
     (*str)++;
   }
+}
+
+void trim_right(char **str)
+{
+  char *end = *str + strlen(*str);
+  end--;
+  while (isspace(*end) && *end) {
+    *end--;
+  }
+  *(end+1) = '\0';
 }
 
 char *start_with_word(char *line, char *word)
@@ -342,9 +319,37 @@ int parse_task(char *line)
   
   gCurrentTask = &gTasks[gTasksCount];
   strncpy(gCurrentTask->name, name, MAX_TASK_NAME_LEN);
+  gCurrentTask->line_start = gLine + 1;
   
   gInsideTask = 1;
   gTasksCount++;
+  return 1;
+}
+
+int parse_include(char *line)
+{
+  char *filename;
+  
+  if (gLineStackIndex + 1 > MAX_INCLUDES) {
+    perr("include depth exceeded 10.\n"); // MAX_INCLUDES
+  }
+  
+  filename = start_with_word(line, "include");
+  if (!filename)
+    return 0;
+  
+  gLineStack[gLineStackIndex] = gLine;
+  gLineStackIndex++;
+  
+  trim_left(&filename);
+  trim_right(&filename);
+  
+  if (process_file(filename, 0) < 0) {
+    perr("problem while opening included file.\n");
+  }
+  
+  gLineStackIndex--;
+  gLine = gLineStack[gLineStackIndex];
   return 1;
 }
 
@@ -361,6 +366,24 @@ int parse_print(char *line)
   return 1;
 }
 
+int parse_exit(char *line)
+{
+  int exit_code;
+  char *ptr;
+  
+  ptr = start_with_word(line, "exit");
+  if (!ptr)
+    return 0;
+  
+  trim_left(&ptr);
+  trim_right(&ptr);
+  
+  exit_code = atoi(ptr);
+  printf("kmak exited at line %d with error code %d\n", gLine, exit_code);
+  terminate(exit_code);
+  return 1;
+}
+
 int parse_call(char *line)
 {
   char *ptr;
@@ -374,6 +397,9 @@ int parse_call(char *line)
   return 1;
 }
 
+#ifdef _WIN32
+
+#include <windows.h>
 int run_command(const char *cmdline)
 {
   STARTUPINFOA si;
@@ -399,6 +425,61 @@ int run_command(const char *cmdline)
   CloseHandle(pi.hThread);
   return exit_code;
 }
+
+void terminate(int code)
+{
+  SAFE_FREE(gFileContent);
+  
+  for (int i = 0; i < gTasksCount; ++i) {
+    for (int j = 0; j < gTasks[i].line_count; ++j) {
+      SAFE_FREE(gTasks[i].lines[j]);
+    }
+  }
+  ExitProcess(code);
+}
+
+#elif __linux__
+
+#include <unistd.h>
+#include <sys/wait.h>
+
+int run_command(const char *cmdline) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    perror("fork failed");
+    return -1;
+  }
+  else if (pid == 0) {
+    execl("/bin/sh", "sh", "-c", cmdline, (char *)NULL);
+    perror("execl failed");
+    _exit(127); // quit fork
+  }
+  else {
+    int status;
+    if (waitpid(pid, &status, 0) == -1) {
+      perror("waitpid failed");
+      return -1;
+    }
+    if (WIFEXITED(status)) {
+      return WEXITSTATUS(status);
+    } else {
+      return -1;
+    }
+  }
+}
+
+void terminate(int code)
+{
+  SAFE_FREE(gFileContent);
+  for (int i = 0; i < gTasksCount; ++i) {
+    for (int j = 0; j < gTasks[i].line_count; ++j) {
+      SAFE_FREE(gTasks[i].lines[j]);
+    }
+  }
+  exit(code);
+}
+
+#endif
 
 int parse_cmd(char *line)
 {
@@ -437,6 +518,7 @@ int run_task(char *name)
   }
   
   task = &gTasks[task_idx];
+  gLine = task->line_start;
   for (int i = 0; i < task->line_count; ++i) {
     char *line = task->lines[i];
     if (parse_print(line)) {
@@ -447,7 +529,80 @@ int run_task(char *name)
     } else
     if (parse_cmd(line)) {
     
+    } else
+    if (parse_exit(line)) {
+      
     }
+    gLine++;
+  }
+  return 0;
+}
+
+int process_file(char *filename, int fromMain)
+{
+  FILE *fp = fopen(filename, "r");
+  if (!fp) {
+    if (fromMain) {
+      printf("error: Couldn't open %s\n", filename);
+      usage(gProgName);
+    }
+    return -1;
+  }
+  
+  fseek(fp, 0, SEEK_END);
+  size_t len = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  
+  gFileContent = malloc(len + 1);
+  memset(gFileContent, '\0', len + 1);
+  if (!gFileContent) {
+    run_err("Could not allocate input file data.\n");
+    fclose(fp);
+    return -1;
+  }
+  fread(gFileContent, 1, len, fp);
+  fclose(fp);
+  
+  gLine = 0;
+  gInsideTask = 0;
+  char *p, *p2;
+  char *line = find_next(&p, gFileContent, "\r\n");
+  while (line) {
+    char line_buf[1024];
+    strncpy(line_buf, line, sizeof(line_buf) - 1);
+    line_buf[sizeof(line_buf) - 1] = '\0';
+    char *ln = line_buf;
+    
+    gLine++;
+    ignore_comments(ln);
+    if (gInsideTask) {
+      if ((*ln) && (*ln != ' ') && (*ln != '\t')) {
+        gCurrentTask = NULL;
+        gInsideTask = 0;
+      }
+    }
+        
+    trim_left(&ln);
+    
+    process_variable_substitution(ln);
+    if (parse_task(ln)) {
+      line = find_next(&p2, p, "\r\n");
+      p = p2;
+      continue;
+    } else
+    if (parse_include(ln)) {
+      
+    } else
+    if (parse_variable_definition(ln)) {
+    
+    }
+    
+    if (gInsideTask && gCurrentTask) {
+      gCurrentTask->lines[gCurrentTask->line_count] = strdup(ln);
+      gCurrentTask->line_count++;
+    }
+    line = find_next(&p2, p, "\r\n");
+    p = p2;
   }
   return 0;
 }
