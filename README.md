@@ -9,28 +9,33 @@ To build KMAK, run
 ```
 kmak.exe make.kmk compile
 ```
-from the main directory. It will produce a `kmak0.exe` file that you can then rename `kmak.exe` to use.
+from the main directory. It will produce a `kmak0.exe`/`kmak0` file that you can then rename `kmak.exe`/`kmak` to use.
 
 ## Starting
+The example below is the one for the Windows version, but building on Linux is the same.
+
 ```
-usage: kmak.exe InputFile <Task>
+usage: kmak InputFile <Task>
 ```
 
 For example with `make.kmk` in `example`:
 ```
-# Global Variables
+# Variables
 CC = gcc
 SRC = game.c
 TARGET = game.exe
 
 # Tasks
 task clean
+	print Cleaning...
 	cmd del $(TARGET)
 
 task run
+	print Running...
 	cmd $(TARGET)
 
 task make
+	print Making project...
 	cmd $(CC) -o $(TARGET) $(SRC)
 ```
 
